@@ -16,6 +16,7 @@ export function collectContinuousDeployFingerprintInput() {
     branch: getInput('branch'),
     githubToken: getInput('github-token'),
     workingDirectory: getInput('working-directory'),
+    wait: !!getInput('wait'),
   };
 }
 
@@ -48,16 +49,6 @@ export async function continuousDeployFingerprintAction(input = collectContinuou
     fingerprintHash: androidFingerprintHash,
     excludeExpiredBuilds: isInPullRequest,
   });
-  if (androidBuildInfo) {
-    info(`Existing Android build found with matching fingerprint: ${androidBuildInfo.id}`);
-  } else {
-    info(`No existing Android build found for fingerprint, starting a new build...`);
-    androidBuildInfo = await createEASBuildAsync({
-      cwd: input.workingDirectory,
-      platform: 'android',
-      profile: input.profile,
-    });
-  }
 
   let iosBuildInfo = await getBuildInfoWithFingerprintAsync({
     cwd: input.workingDirectory,
@@ -66,11 +57,48 @@ export async function continuousDeployFingerprintAction(input = collectContinuou
     fingerprintHash: iosFingerprintHash,
     excludeExpiredBuilds: isInPullRequest,
   });
-  if (iosBuildInfo) {
-    info(`Existing iOS build found with matching fingerprint: ${iosBuildInfo.id}`);
-  } else {
+
+  if (!androidBuildInfo && !iosBuildInfo) {
+    info(`No existing Android build found for fingerprint, starting a new build...`);
     info(`No existing iOS build found for fingerprint, starting a new build...`);
-    iosBuildInfo = await createEASBuildAsync({ cwd: input.workingDirectory, platform: 'ios', profile: input.profile });
+    [androidBuildInfo, iosBuildInfo] = await Promise.all([
+      createEASBuildAsync({
+        cwd: input.workingDirectory,
+        platform: 'ios',
+        profile: input.profile,
+        wait: input.wait,
+      }),
+      createEASBuildAsync({
+        cwd: input.workingDirectory,
+        platform: 'android',
+        profile: input.profile,
+        wait: input.wait,
+      }),
+    ]);
+  } else {
+    if (androidBuildInfo) {
+      info(`Existing Android build found with matching fingerprint: ${androidBuildInfo.id}`);
+    } else {
+      info(`No existing Android build found for fingerprint, starting a new build...`);
+      androidBuildInfo = await createEASBuildAsync({
+        cwd: input.workingDirectory,
+        platform: 'android',
+        profile: input.profile,
+        wait: input.wait,
+      });
+    }
+
+    if (iosBuildInfo) {
+      info(`Existing iOS build found with matching fingerprint: ${iosBuildInfo.id}`);
+    } else {
+      info(`No existing iOS build found for fingerprint, starting a new build...`);
+      iosBuildInfo = await createEASBuildAsync({
+        cwd: input.workingDirectory,
+        platform: 'ios',
+        profile: input.profile,
+        wait: input.wait,
+      });
+    }
   }
 
   const builds = [androidBuildInfo, iosBuildInfo];
@@ -201,17 +229,20 @@ async function createEASBuildAsync({
   cwd,
   profile,
   platform,
+  wait,
 }: {
   cwd: string;
   profile: string;
-  platform: 'ios' | 'android';
+  platform: 'ios' | 'android' | 'all';
+  wait: boolean;
 }): Promise<BuildInfo> {
   let stdout: string;
   try {
     const extraArgs = isDebug() ? ['--build-logger-level', 'debug'] : [];
+    const noWaitArg = wait ? '--no-wait' : '';
     const execOutput = await getExecOutput(
       await which('eas', true),
-      ['build', '--profile', profile, '--platform', platform, '--non-interactive', '--json', '--no-wait', ...extraArgs],
+      ['build', '--profile', profile, '--platform', platform, '--non-interactive', '--json', noWaitArg, ...extraArgs],
       {
         cwd,
         silent: !isDebug(),
